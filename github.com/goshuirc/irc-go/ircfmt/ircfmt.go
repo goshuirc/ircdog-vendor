@@ -18,7 +18,14 @@ const (
 	underline     string = "\x1f"
 	reset         string = "\x0f"
 
-	runecolour rune = '\x03'
+	runecolour        rune = '\x03'
+	runebold          rune = '\x02'
+	runemonospace     rune = '\x11'
+	runereverseColour rune = '\x16'
+	runeitalic        rune = '\x1d'
+	runestrikethrough rune = '\x1e'
+	runereset         rune = '\x0f'
+	runeunderline     rune = '\x1f'
 
 	// valid characters in a colour code character, for speed
 	colours1 string = "0123456789"
@@ -27,6 +34,8 @@ const (
 var (
 	// valtoescape replaces most of IRC characters with our escapes.
 	valtoescape = strings.NewReplacer("$", "$$", colour, "$c", reverseColour, "$v", bold, "$b", italic, "$i", strikethrough, "$s", underline, "$u", monospace, "$m", reset, "$r")
+	// valToStrip replaces most of the IRC characters with nothing
+	valToStrip = strings.NewReplacer(colour, "$c", reverseColour, "", bold, "", italic, "", strikethrough, "", underline, "", monospace, "", reset, "")
 
 	// escapetoval contains most of our escapes and how they map to real IRC characters.
 	// intentionally skips colour, since that's handled elsewhere.
@@ -122,15 +131,16 @@ func Escape(in string) string {
 	in = valtoescape.Replace(in)
 
 	inRunes := []rune(in)
-	var out string
+	//var out string
+	out := strings.Builder{}
 	for 0 < len(inRunes) {
 		if 1 < len(inRunes) && inRunes[0] == '$' && inRunes[1] == 'c' {
 			// handle colours
-			out += "$c"
+			out.WriteString("$c")
 			inRunes = inRunes[2:] // strip colour code chars
 
 			if len(inRunes) < 1 || !strings.Contains(colours1, string(inRunes[0])) {
-				out += "[]"
+				out.WriteString("[]")
 				continue
 			}
 
@@ -159,19 +169,77 @@ func Escape(in string) string {
 				backName = backBuffer
 			}
 
-			out += "[" + foreName
+			out.WriteRune('[')
+			out.WriteString(foreName)
 			if backName != "" {
-				out += "," + backName
+				out.WriteRune(',')
+				out.WriteString(backName)
 			}
-			out += "]"
+			out.WriteRune(']')
 
 		} else {
-			out += string(inRunes[0])
-			inRunes = inRunes[1:]
+			// special case for $$c
+			if len(inRunes) > 2 && inRunes[0] == '$' && inRunes[1] == '$' && inRunes[2] == 'c' {
+				out.WriteRune(inRunes[0])
+				out.WriteRune(inRunes[1])
+				out.WriteRune(inRunes[2])
+				inRunes = inRunes[3:]
+			} else {
+				out.WriteRune(inRunes[0])
+				inRunes = inRunes[1:]
+			}
 		}
 	}
 
-	return out
+	return out.String()
+}
+
+// Strip takes a raw IRC string and removes it with all formatting codes removed
+// IE, it turns this: "This is a \x02cool\x02, \x034red\x0f message!"
+// into: "This is a cool, red message!"
+func Strip(in string) string {
+	out := strings.Builder{}
+	runes := []rune(in)
+	if out.Len() < len(runes) { // Reduce allocations where needed
+		out.Grow(len(in) - out.Len())
+	}
+	for len(runes) > 0 {
+		switch runes[0] {
+		case runebold, runemonospace, runereverseColour, runeitalic, runestrikethrough, runeunderline, runereset:
+			runes = runes[1:]
+		case runecolour:
+			runes = removeColour(runes)
+		default:
+			out.WriteRune(runes[0])
+			runes = runes[1:]
+		}
+	}
+	return out.String()
+}
+
+func removeNumber(runes []rune) []rune {
+	if len(runes) > 0 && runes[0] >= '0' && runes[0] <= '9' {
+		runes = runes[1:]
+	}
+	return runes
+}
+
+func removeColour(runes []rune) []rune {
+	if runes[0] != runecolour {
+		return runes
+	}
+
+	runes = runes[1:]
+	runes = removeNumber(runes)
+	runes = removeNumber(runes)
+
+	if len(runes) > 1 && runes[0] == ',' && runes[1] >= '0' && runes[1] <= '9' {
+		runes = runes[2:]
+	} else {
+		return runes // Nothing else because we dont have a comma
+	}
+	runes = removeNumber(runes)
+	return runes
 }
 
 // Unescape takes our escaped string and returns a raw IRC string.
@@ -179,7 +247,7 @@ func Escape(in string) string {
 // IE, it turns this: "This is a $bcool$b, $c[red]red$r message!"
 // into this: "This is a \x02cool\x02, \x034red\x0f message!"
 func Unescape(in string) string {
-	out := ""
+	out := strings.Builder{}
 
 	remaining := []rune(in)
 	for 0 < len(remaining) {
@@ -192,9 +260,9 @@ func Unescape(in string) string {
 
 			val, exists := escapetoval[char]
 			if exists {
-				out += val
+				out.WriteString(val)
 			} else if char == 'c' {
-				out += colour
+				out.WriteString(colour)
 
 				if len(remaining) < 2 || remaining[0] != '[' {
 					continue
@@ -244,18 +312,19 @@ func Unescape(in string) string {
 				}
 
 				// output colour codes
-				out += foreColour
+				out.WriteString(foreColour)
 				if backColour != "" {
-					out += "," + backColour
+					out.WriteRune(',')
+					out.WriteString(backColour)
 				}
 			} else {
 				// unknown char
-				out += string(char)
+				out.WriteRune(char)
 			}
 		} else {
-			out += string(char)
+			out.WriteRune(char)
 		}
 	}
 
-	return out
+	return out.String()
 }
